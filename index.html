@@ -384,6 +384,11 @@
         animFrameId = null;
       }
 
+      // Save current phase so we can restore it after the trigger ends
+      const phaseBeforeTrigger = currentPhase;
+
+      // Hide all UI elements (index number, status, participant count, etc.)
+      showPhase('performance');
       app.style.backgroundColor = color ?? '#ffffff';
 
       instantTimer = setTimeout(() => {
@@ -392,6 +397,7 @@
           startPerformanceRender();
         } else {
           app.style.backgroundColor = '#000000';
+          showPhase(phaseBeforeTrigger);
         }
       }, (duration ?? 1) * 1000);
     }
