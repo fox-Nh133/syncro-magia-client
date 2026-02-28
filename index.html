@@ -389,20 +389,24 @@
       const total       = Math.max(myTotal, 1);
       const idx         = myIndex ?? 0;
 
+      // 80% of duration: all devices must start lighting up within this window,
+      // leaving the remaining 20% where all devices are fully lit.
+      const activeWindow = durationMs * 0.8;
+
       // Compute per-device light-on time (ms from trigger) based on effect
       let arriveAt;
       if (effect === 'wave') {
-        arriveAt = (idx / total) * durationMs;
+        arriveAt = (idx / Math.max(total - 1, 1)) * activeWindow;
       } else if (effect === 'split') {
         const half     = total / 2;
         const distNorm = Math.abs(idx - half) / Math.max(half, 1);
-        arriveAt = distNorm * durationMs;
+        arriveAt = distNorm * activeWindow;
       } else {
-        // 'flash' or unknown: immediate
+        // 'static', 'flash', or unknown: immediate
         arriveAt = 0;
       }
 
-      // For flash: light off after min(duration, 0.3) s; for others: light stays on
+      // For flash: light off after min(duration, 0.3) s; for others: light stays on until durationMs
       const flashOffAt = (effect === 'flash') ? Math.min(durationMs, 300) : durationMs;
 
       // Hide all UI elements (index number, status, participant count, etc.)
