@@ -307,7 +307,7 @@
       if (rangeMatch) {
         const lo    = parseFloat(rangeMatch[1]) / 100;
         const hi    = parseFloat(rangeMatch[2]) / 100;
-        const ratio = (total > 1) ? idx / (total - 1) : 0;
+        const ratio = (idx - 1) / Math.max(total - 1, 1);
         return ratio >= lo && ratio < hi;
       }
 
@@ -396,10 +396,10 @@
       // Compute per-device light-on time (ms from trigger) based on effect
       let arriveAt;
       if (effect === 'wave') {
-        arriveAt = (idx / Math.max(total - 1, 1)) * activeWindow;
+        arriveAt = ((idx - 1) / Math.max(total - 1, 1)) * activeWindow;
       } else if (effect === 'split') {
-        const half     = total / 2;
-        const distNorm = Math.abs(idx - half) / Math.max(half, 1);
+        const center   = (total + 1) / 2;
+        const distNorm = Math.abs(idx - center) / Math.max((total - 1) / 2, 1);
         arriveAt = distNorm * activeWindow;
       } else {
         // 'static', 'flash', or unknown: immediate
