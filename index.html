@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Magia Player</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Bootstrap Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: #000;
+      color: #fff;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #app {
+      width: 100%; height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ── Phase screens ── */
+    .phase-screen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 100%; height: 100%;
+    }
+    .phase-screen.active { display: flex; }
+
+    /* ── Entry phase ── */
+    #btn-entry {
+      font-size: 1.4rem;
+      padding: 1rem 2.5rem;
+      border-radius: 3rem;
+      transition: transform 0.1s;
+    }
+    #btn-entry:active { transform: scale(0.96); }
+
+    /* ── Ready phase ── */
+    #index-display {
+      font-size: min(38vw, 38vh);
+      font-weight: 900;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      color: #fff;
+      text-align: center;
+    }
+
+    #status-row {
+      margin-top: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    #total-display {
+      position: fixed;
+      bottom: 2rem;
+      font-size: 1.1rem;
+      color: rgba(255, 255, 255, 0.55);
+      letter-spacing: 0.02em;
+    }
+
+    /* ── Guidance toast ── */
+    #guidance-toast {
+      position: fixed;
+      top: 1rem;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 9999;
+      min-width: 300px;
+      max-width: 90vw;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+
+    <!-- ── Phase 1: Entry ── -->
+    <div id="phase-entry" class="phase-screen active">
+      <button id="btn-entry" class="btn btn-primary">
+        <i class="bi bi-music-note-beamed me-2"></i>演奏に参加する
+      </button>
+    </div>
+
+    <!-- ── Phase 2: Ready ── -->
+    <div id="phase-ready" class="phase-screen">
+      <div id="index-display">--</div>
+      <div id="status-row">
+        <span id="status-badge" class="badge bg-secondary">
+          <i class="bi bi-wifi me-1"></i>接続待機中
+        </span>
+      </div>
+      <div id="total-display">
+        接続中の人数: <span id="total-count">0</span>
+      </div>
+    </div>
+
+    <!-- Phase 3 (Performance) & Phase 4 (Instant Demo):
+         No element needed — lighting is via #app background-color -->
+  </div>
+
+  <!-- ── Guidance Toast ── -->
+  <div id="guidance-toast" class="toast align-items-center text-bg-warning border-0"
+       role="alert" aria-atomic="true">
+    <div class="d-flex">
+      <div class="toast-body">
+        <i class="bi bi-sun-fill me-1"></i>
+        画面の明るさを最大にし、通知をオフ（おやすみモード）にしてください
+      </div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto"
+              data-bs-dismiss="toast" aria-label="閉じる"></button>
+    </div>
+  </div>
+
+  <!-- ── Scripts ── -->
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Socket.io Client v4 -->
+  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+  <!-- NoSleep.js (sleep prevention fallback) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/nosleep.js/0.12.0/NoSleep.min.js"></script>
+
+  <script>
+    'use strict';
+
+    // ────────────────────────────────────────────────
+    //  Configuration
+    //  Override server URL: ?server=http://192.168.1.x:3000
+    //  or set localStorage.setItem('magia_server_url', '...')
+    // ────────────────────────────────────────────────
+    const SERVER_URL = (() => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('server')) return params.get('server');
+      const saved = localStorage.getItem('magia_server_url');
+      if (saved) return saved;
+      return `${location.protocol}//${location.hostname}:3000`;
+    })();
+
+    // ────────────────────────────────────────────────
+    //  State
+    // ────────────────────────────────────────────────
+    let socket        = null;
+    let myIndex       = null;  // assigned index
+    let myTotal       = 0;     // current total participants
+    let offset        = 0;     // ms: Date.now() + offset ≈ serverTime
+    let performanceData = null;// MagiaML JSON
+    let startTime     = null;  // Unix ms when performance started (server clock)
+    let isPerforming  = false;
+    let animFrameId   = null;
+    let instantTimer  = null;  // timeout handle for instant_trigger
+    let wakeLock      = null;
+    let noSleep       = null;
+    let currentPhase  = 'entry'; // 'entry' | 'ready' | 'performance'
+
+    // ────────────────────────────────────────────────
+    //  DOM references
+    // ────────────────────────────────────────────────
+    const app          = document.getElementById('app');
+    const phaseEntry   = document.getElementById('phase-entry');
+    const phaseReady   = document.getElementById('phase-ready');
+    const btnEntry     = document.getElementById('btn-entry');
+    const indexDisplay = document.getElementById('index-display');
+    const totalCount   = document.getElementById('total-count');
+    const statusBadge  = document.getElementById('status-badge');
+
+    // ────────────────────────────────────────────────
+    //  Phase management
+    // ────────────────────────────────────────────────
+    function showPhase(name) {
+      currentPhase = name;
+      phaseEntry.classList.remove('active');
+      phaseReady.classList.remove('active');
+      if (name === 'entry')   phaseEntry.classList.add('active');
+      if (name === 'ready')   phaseReady.classList.add('active');
+      // 'performance' phase: all phase screens hidden; only #app bg-color is visible
+    }
+
+    function setStatus(text, badgeClass) {
+      statusBadge.className = `badge ${badgeClass}`;
+      statusBadge.innerHTML = `<i class="bi bi-wifi me-1"></i>${text}`;
+    }
+
+    // ────────────────────────────────────────────────
+    //  Wake Lock
+    // ────────────────────────────────────────────────
+    async function acquireWakeLock() {
+      // Prefer native Screen Wake Lock API
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeLock.addEventListener('release', () => { wakeLock = null; });
+          return;
+        } catch (e) {
+          console.warn('WakeLock API failed, falling back to NoSleep.js:', e);
+        }
+      }
+      // Fallback: NoSleep.js
+      if (!noSleep) noSleep = new NoSleep();
+      noSleep.enable();
+    }
+
+    // Re-acquire wake lock when tab becomes visible again
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState !== 'visible') return;
+      if (currentPhase === 'entry') return;
+
+      if (!wakeLock) {
+        await acquireWakeLock();
+      }
+
+      // Re-sync time and resume render loop if performing
+      if (isPerforming && startTime !== null) {
+        await syncTime();
+        if (instantTimer === null) {
+          if (animFrameId) cancelAnimationFrame(animFrameId);
+          renderLoop();
+        }
+      }
+    });
+
+    // ────────────────────────────────────────────────
+    //  Fullscreen
+    // ────────────────────────────────────────────────
+    function requestFullscreen() {
+      const el = document.documentElement;
+      const fn = el.requestFullscreen
+              || el.webkitRequestFullscreen
+              || el.mozRequestFullScreen
+              || el.msRequestFullscreen;
+      if (fn) fn.call(el).catch(() => {});
+    }
+
+    // ────────────────────────────────────────────────
+    //  Time synchronisation
+    //  Sends get_time 5 times, computes average offset
+    //  offset = estimatedServerTime - localTime
+    //  → serverTime ≈ Date.now() + offset
+    // ────────────────────────────────────────────────
+    function syncTime() {
+      return new Promise((resolve) => {
+        const ROUNDS   = 5;
+        const samples  = []; // offset values
+        let   pending  = 0;  // outstanding round index
+
+        function doRound() {
+          const t0 = Date.now();
+          socket.emit('get_time');
+          socket.once('sync_time', ({ serverTime }) => {
+            const t1  = Date.now();
+            const rtt = t1 - t0;
+            // Estimated server time at moment of response reception
+            samples.push((serverTime + rtt / 2) - t1);
+            pending++;
+            if (pending < ROUNDS) {
+              setTimeout(doRound, 60);
+            } else {
+              // Trim 1 outlier from each end, average the rest
+              samples.sort((a, b) => a - b);
+              const trimmed = samples.slice(1, -1);
+              offset = trimmed.reduce((s, v) => s + v, 0) / trimmed.length;
+              console.log(`[Magia] Time offset: ${offset.toFixed(1)} ms`);
+              resolve();
+            }
+          });
+        }
+
+        doRound();
+      });
+    }
+
+    /** Returns current estimated server-synchronised time in ms */
+    function now() {
+      return Date.now() + offset;
+    }
+
+    // ────────────────────────────────────────────────
+    //  MagiaML — target selector evaluation
+    //
+    //  Supported target strings:
+    //    "all"               → always match
+    //    "index(n)"          → match specific index
+    //    "range(n%, m%)"     → match if index/(total-1) ∈ [n%, m%)
+    //    "odd" / "even"      → match odd/even indices
+    //    "first" / "last"    → match index 0 / total-1
+    // ────────────────────────────────────────────────
+    function matchesTarget(target, idx, total) {
+      if (!target || target === 'all') return true;
+
+      // range(n%, m%)
+      const rangeMatch = target.match(/^range\(\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)$/);
+      if (rangeMatch) {
+        const lo    = parseFloat(rangeMatch[1]) / 100;
+        const hi    = parseFloat(rangeMatch[2]) / 100;
+        const ratio = (total > 1) ? idx / (total - 1) : 0;
+        return ratio >= lo && ratio < hi;
+      }
+
+      // index(n)
+      const idxMatch = target.match(/^index\(\s*(\d+)\s*\)$/);
+      if (idxMatch) return idx === parseInt(idxMatch[1], 10);
+
+      if (target === 'odd')   return idx % 2 === 1;
+      if (target === 'even')  return idx % 2 === 0;
+      if (target === 'first') return idx === 0;
+      if (target === 'last')  return idx === total - 1;
+
+      return false;
+    }
+
+    /**
+     * Given elapsed time (ms since startTime), return the background colour
+     * this client should show, based on the MagiaML cue list.
+     *
+     * Expected MagiaML JSON shape:
+     * {
+     *   "cues": [
+     *     { "time": 0, "duration": 500, "color": "#ffffff", "target": "all" },
+     *     { "time": 1000, "duration": 250, "color": "#ff0000", "target": "range(0%, 50%)" }
+     *   ]
+     * }
+     */
+    function getColorAtElapsed(elapsed) {
+      if (!performanceData || !Array.isArray(performanceData.cues)) return '#000000';
+
+      let color = '#000000';
+      for (const cue of performanceData.cues) {
+        const duration = cue.duration ?? 500;
+        if (elapsed >= cue.time && elapsed < cue.time + duration) {
+          if (matchesTarget(cue.target, myIndex, myTotal)) {
+            color = cue.color ?? '#ffffff';
+          }
+        }
+      }
+      return color;
+    }
+
+    // ────────────────────────────────────────────────
+    //  Render loop (requestAnimationFrame)
+    // ────────────────────────────────────────────────
+    function renderLoop() {
+      if (!isPerforming || instantTimer !== null) {
+        animFrameId = null;
+        return;
+      }
+      const elapsed = now() - startTime;
+      app.style.backgroundColor = getColorAtElapsed(elapsed);
+      animFrameId = requestAnimationFrame(renderLoop);
+    }
+
+    function startPerformanceRender() {
+      if (animFrameId) cancelAnimationFrame(animFrameId);
+      animFrameId = null;
+      renderLoop();
+    }
+
+    // ────────────────────────────────────────────────
+    //  Instant trigger handler
+    // ────────────────────────────────────────────────
+    function handleInstantTrigger({ color, duration }) {
+      // Cancel any previous instant override
+      if (instantTimer !== null) {
+        clearTimeout(instantTimer);
+        instantTimer = null;
+      }
+      // Pause render loop
+      if (animFrameId) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+      }
+
+      app.style.backgroundColor = color ?? '#ffffff';
+
+      instantTimer = setTimeout(() => {
+        instantTimer = null;
+        if (isPerforming) {
+          startPerformanceRender();
+        } else {
+          app.style.backgroundColor = '#000000';
+        }
+      }, (duration ?? 1) * 1000);
+    }
+
+    // ────────────────────────────────────────────────
+    //  Socket.io connection
+    // ────────────────────────────────────────────────
+    function initSocket() {
+      socket = io(SERVER_URL, {
+        reconnection: true,
+        reconnectionDelay: 500,
+        reconnectionDelayMax: 2000,
+        reconnectionAttempts: Infinity,
+      });
+
+      // ── Connected (initial or after reconnect) ──
+      socket.on('connect', async () => {
+        console.log('[Magia] Connected:', socket.id);
+        setStatus('接続済み', 'bg-success');
+        await syncTime();
+        // If already performing, jump straight to current position
+        if (isPerforming && startTime !== null && instantTimer === null) {
+          startPerformanceRender();
+        }
+      });
+
+      // ── Server assigns index & total ──
+      socket.on('connection', ({ index, total }) => {
+        // Always adopt server-assigned index (new index on reconnect)
+        myIndex = index;
+        myTotal = total;
+        indexDisplay.textContent = index;
+        totalCount.textContent   = total;
+
+        // Only switch phase if not already performing
+        if (currentPhase !== 'performance') {
+          showPhase('ready');
+        }
+      });
+
+      // ── Total participant count update ──
+      socket.on('total_update', ({ total }) => {
+        myTotal = total;
+        totalCount.textContent = total;
+      });
+
+      // ── Performance data (MagiaML) upload from admin ──
+      socket.on('broadcast_performance', (data) => {
+        performanceData = data;
+        console.log('[Magia] Performance data received:', data);
+      });
+
+      // ── Performance start ──
+      socket.on('performance_start', ({ startTime: st }) => {
+        startTime    = st;
+        isPerforming = true;
+
+        // Hide index number; go to performance phase (all phase screens hidden)
+        showPhase('performance');
+        app.style.backgroundColor = '#000000';
+
+        startPerformanceRender();
+      });
+
+      // ── Instant trigger (interrupts any state) ──
+      socket.on('instant_trigger', handleInstantTrigger);
+
+      // ── Disconnect ──
+      socket.on('disconnect', () => {
+        console.log('[Magia] Disconnected');
+        if (currentPhase === 'ready') {
+          setStatus('切断 — 再接続中…', 'bg-danger');
+        }
+      });
+
+      // ── Connection error ──
+      socket.on('connect_error', (err) => {
+        console.warn('[Magia] Connection error:', err.message);
+        if (currentPhase === 'ready') {
+          setStatus('接続エラー', 'bg-danger');
+        }
+      });
+    }
+
+    // ────────────────────────────────────────────────
+    //  Entry button
+    // ────────────────────────────────────────────────
+    btnEntry.addEventListener('click', async () => {
+      btnEntry.disabled = true;
+      btnEntry.innerHTML =
+        '<span class="spinner-border spinner-border-sm me-2" role="status"></span>接続中...';
+
+      // 1. Request fullscreen (must be triggered by user gesture)
+      requestFullscreen();
+
+      // 2. Acquire wake lock (must be triggered by user gesture on some browsers)
+      await acquireWakeLock();
+
+      // 3. Connect to server
+      initSocket();
+
+      // 4. Show guidance toast
+      const toastEl = document.getElementById('guidance-toast');
+      const toast   = new bootstrap.Toast(toastEl, { delay: 7000 });
+      toast.show();
+    });
+  </script>
+</body>
+</html>
