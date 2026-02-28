@@ -424,10 +424,17 @@
       let arriveAt;
       if (effect === 'wave') {
         arriveAt = ((idx - 1) / Math.max(total - 1, 1)) * activeWindow;
+      } else if (effect === 'wave-reverse') {
+        const ratio = (idx - 1) / Math.max(total - 1, 1);
+        arriveAt = (1 - ratio) * activeWindow;
       } else if (effect === 'split') {
         const center   = (total + 1) / 2;
         const distNorm = Math.abs(idx - center) / Math.max((total - 1) / 2, 1);
         arriveAt = distNorm * activeWindow;
+      } else if (effect === 'split-reverse') {
+        const center   = (total + 1) / 2;
+        const distNorm = Math.abs(idx - center) / Math.max((total - 1) / 2, 1);
+        arriveAt = (1 - distNorm) * activeWindow;
       } else {
         // 'static', 'flash', or unknown: immediate
         arriveAt = 0;
