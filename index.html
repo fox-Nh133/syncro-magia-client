@@ -372,7 +372,7 @@
     // ────────────────────────────────────────────────
     //  Instant trigger handler
     // ────────────────────────────────────────────────
-    function handleInstantTrigger({ color, duration }) {
+    function handleInstantTrigger({ color, duration, effect }) {
       // Cancel any previous instant override
       if (instantTimer !== null) {
         clearTimeout(instantTimer);
@@ -384,22 +384,60 @@
         animFrameId = null;
       }
 
-      // Save current phase so we can restore it after the trigger ends
       const phaseBeforeTrigger = currentPhase;
+      const durationMs  = (duration ?? 1) * 1000;
+      const total       = Math.max(myTotal, 1);
+      const idx         = myIndex ?? 0;
+
+      // Compute per-device light-on time (ms from trigger) based on effect
+      let arriveAt;
+      if (effect === 'wave') {
+        arriveAt = (idx / total) * durationMs;
+      } else if (effect === 'split') {
+        const half     = total / 2;
+        const distNorm = Math.abs(idx - half) / Math.max(half, 1);
+        arriveAt = distNorm * durationMs;
+      } else {
+        // 'flash' or unknown: immediate
+        arriveAt = 0;
+      }
+
+      // For flash: light off after min(duration, 0.3) s; for others: light stays on
+      const flashOffAt = (effect === 'flash') ? Math.min(durationMs, 300) : durationMs;
 
       // Hide all UI elements (index number, status, participant count, etc.)
       showPhase('performance');
-      app.style.backgroundColor = color ?? '#ffffff';
 
-      instantTimer = setTimeout(() => {
-        instantTimer = null;
-        if (isPerforming) {
-          startPerformanceRender();
-        } else {
+      // Use instantTimer as a non-null sentinel so renderLoop / visibilitychange
+      // handler won't restart the performance render loop while we're animating.
+      instantTimer = true;
+
+      const triggerStartTime = performance.now();
+
+      function instantLoop() {
+        const elapsed = performance.now() - triggerStartTime;
+
+        if (elapsed >= durationMs) {
+          // Animation complete — restore state
+          animFrameId  = null;
+          instantTimer = null;
           app.style.backgroundColor = '#000000';
-          showPhase(phaseBeforeTrigger);
+          if (isPerforming) {
+            startPerformanceRender();
+          } else {
+            showPhase(phaseBeforeTrigger);
+          }
+          return;
         }
-      }, (duration ?? 1) * 1000);
+
+        const lit = (effect === 'flash')
+          ? elapsed < flashOffAt
+          : elapsed >= arriveAt;
+        app.style.backgroundColor = lit ? (color ?? '#ffffff') : '#000000';
+        animFrameId = requestAnimationFrame(instantLoop);
+      }
+
+      animFrameId = requestAnimationFrame(instantLoop);
     }
 
     // ────────────────────────────────────────────────
